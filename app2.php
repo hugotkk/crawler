@@ -4,37 +4,38 @@ require_once('vendor/autoload.php');
 
 $client = new GuzzleHttp\Client();
 
-$begin = new Datetime('2002-01-02');
-$end = new Datetime('2021-06-23');
-$end = new Datetime('2003-01-01');
-$interval = DateInterval::createFromDateString('1 day');
-$period = new DatePeriod($begin, $interval, $end);
+$folder = '/folder/archive2/';
+is_dir($folder) or mkdir($folder);
 
-$folder = 'archive/';
-mkdir($folder);
-$base = 'https://hk.appledaily.com/';
-foreach ($period as $dt) {
-    $url = $base.'/archive/'.$dt->format('Ymd');
-    $request = new \GuzzleHttp\Psr7\Request('GET', $url);
-    $promise = $client->sendAsync($request)->then(function ($response) use ($folder, $dt, $base) {
-        echo $dt->format('Ymd')."\n";
-        $html = $response->getBody()->getContents();
-        $filename = $folder.str_replace('/', '_', trim($dt->format('Ymd'), '/')).'.html';
-        file_put_contents($filename, $html);
-        preg_match_all('#<a href="(/local/[^"]+?)" class="archive-story">#', $html, $matches);
-        $promises = [];
-        foreach($matches[1] as $detail) {
-            $url = $base.$detail;
-            $client = new GuzzleHttp\Client();
-            $request = new \GuzzleHttp\Psr7\Request('GET', $url);
-            $promises[] = $client->sendAsync($request)->then(function ($response) use ($folder, $base, $detail) {
-                echo $detail."\n";
-                $html = $response->getBody()->getContents();
-                $filename = $folder.str_replace('/', '_', trim($detail, '/')).'.html';
-                file_put_contents($filename, $html);
-            });
+foreach (range(2002, 2002) as $year) {
+    $url_file = $folder.$year.'.txt';
+    $urls = explode("\n", trim(file_get_contents($url_file)));
+
+    $requests = function ($total) use ($urls) {
+        foreach ($urls as $url) {
+            $base = 'https://hk.appledaily.com';
+            $url = $base.$url;
+            yield new GuzzleHttp\Psr7\Request('GET', $url);
         }
-        GuzzleHttp\Promise\Utils::settle($promises)->wait();
-    });
-    $promise->wait();
+    };
+
+    $folder_year = $folder.$year.'/';
+    is_dir($folder_year) or mkdir($folder_year);
+
+    $pool = new GuzzleHttp\Pool($client, $requests(100), [
+        'concurrency' => 5,
+        'fulfilled' => function ($response, $index) use (&$urls, $folder_year) {
+            echo "OK: ".$urls[$index]."\n";
+            $html = $response->getBody()->getContents();
+            preg_match_all('#Fusion\.globalContent=(.*?);Fusion\.#m', $html, $matches);
+            $filename = $folder_year.str_replace('/', '_', trim($urls[$index], '/')).'.json';
+            file_put_contents($filename, $matches[1] ?? '');
+        },
+        'rejected' => function ($reason, $index) use (&$urls) {
+            echo "Fail: ".$urls[$index].' '.$reason->getMessage()."\n";
+            sleep(5);
+        },
+    ]);
+
+    $pool->promise()->wait();
 }
